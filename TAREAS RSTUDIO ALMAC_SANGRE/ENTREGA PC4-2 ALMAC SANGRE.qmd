@@ -1,0 +1,200 @@
+---
+title: "ENTREGA PC4-2 ALMAC SANGRE"
+format: html
+editor: visual
+---
+
+# Introducción
+
+El dataset almac_sangre.csv contiene información sobre pacientes con cáncer de próstata, incluyendo variables demográficas, clínicas y de tratamiento, con el objetivo de estudiar factores asociados a la recurrencia bioquímica post-operatoria.
+
+Las variables clave incluyen grupos de edad, raza, volumen prostático, Gleason scores, PSA, terapias, y recurrencia. Al explorar los datos, se identifican valores perdidos en varias variables (ej. Volumen_prostata, Estadio_T, PSA_preoperatorio). Eliminar casos con missing reduciría la muestra y podría sesgar los resultados si los datos no son MCAR (missing completely at random).
+
+Por ello, aplicaremos imputación múltiple con MICE para manejar los datos perdidos de manera robusta, siguiendo estándares en investigación oncológica.
+
+# 1. Carga y preparación inicial de los datos
+
+**¿Qué hacemos?** Cargamos el CSV y convertimos variables categóricas a factores.
+
+**¿Por qué es importante?** Asegura que R trate correctamente las variables en modelos e imputaciones (ej. logreg para binarias, polyreg para categóricas multinivel).
+
+```{r}
+library(tidyverse)
+library(mice)
+library(ggmice)
+library(gtsummary)
+library(rio)
+library(here)
+
+almac_sangre <- import(here("data", "almac_sangre.csv")) %>%
+  mutate(
+    Grupo_edad_GR = factor(Grupo_edad_GR),
+    Raza_afroamericana = factor(Raza_afroamericana, levels = c("No", "Sí")),
+    Historia_familiar = factor(Historia_familiar, levels = c("No", "Sí")),
+    Volumen_tumoral = factor(Volumen_tumoral),
+    Estadio_T = factor(Estadio_T),
+    Gleason_biopsia = factor(Gleason_biopsia),
+    Confinamiento_organo = factor(Confinamiento_organo, levels = c("No", "Sí")),
+    Terapia_previa = factor(Terapia_previa, levels = c("No", "Sí")),
+    Gleason_quirurgico = factor(Gleason_quirurgico),
+    Terapia_adyuvante = factor(Terapia_adyuvante, levels = c("No", "Sí")),
+    Radioterapia_adyuvante = factor(Radioterapia_adyuvante, levels = c("No", "Sí")),
+    Recurrencia_bioquimica = factor(Recurrencia_bioquimica, levels = c("No", "Sí")),
+    Censor = factor(Censor, levels = c("No", "Sí")),
+    BN_positivo = factor(BN_positivo, levels = c("No", "Sí"))
+  )
+
+glimpse(almac_sangre)
+```
+
+# 2. Diagnóstico de los datos perdidos
+
+**¿Qué hacemos?** Contamos missings por variable y visualizamos patrones.
+
+**¿Por qué es importante?** Evalúa la extensión y patrones de missings para decidir si imputar y cómo (ej. si patrones sistemáticos, imputación es esencial).
+
+```{r}
+colSums(is.na(almac_sangre))
+
+almac_sangre %>%
+  ggmice::plot_pattern(square = TRUE, rotate = TRUE) +
+  labs(title = "Patrón de datos perdidos en el dataset Almacenamiento de Sangre")
+```
+
+# 3. ¿Los datos perdidos son completamente al azar (MCAR)?
+
+**¿Qué hacemos?** Comparamos características según missings en variables clave con más NA, ej. Volumen_prostata y Estadio_T.
+
+**¿Por qué es crucial?** Si grupos difieren, missings son MAR/MNAR; imputación previene sesgo en análisis subsiguientes.
+
+```{r}
+tabla1 <- almac_sangre %>% mutate(missing = is.na(Volumen_prostata)) %>%
+  tbl_summary(by = missing, missing_text = "Dato perdido",
+              statistic = list(all_continuous() ~ "{mean} ({sd})",
+                               all_categorical() ~ "{n} ({p}%)")) %>%
+  add_n() %>% bold_labels()
+
+tabla2 <- almac_sangre %>% mutate(missing = is.na(Estadio_T)) %>%
+  tbl_summary(by = missing, missing_text = "Dato perdido",
+              statistic = list(all_continuous() ~ "{mean} ({sd})",
+                               all_categorical() ~ "{n} ({p}%)")) %>%
+  add_n() %>% bold_labels()
+
+tbl_merge(list(tabla1, tabla2),
+          tab_spanner = c("**Volumen próstata perdido**", "**Estadio T perdido**"))
+```
+
+# 4. Preparación del conjunto de datos para la imputación
+
+**¿Qué hacemos?** Seleccionamos variables para análisis final (incluyendo outcome Recurrencia_bioquimica).
+
+**¿Por qué?** Modelo de imputación debe capturar relaciones completas para estimaciones precisas.
+
+```{r}
+datos_imp <- almac_sangre %>%
+  select(Grupo_edad_GR, Edad_mediana_GR, Edad, Raza_afroamericana, Historia_familiar,
+         Volumen_prostata, Volumen_tumoral, Estadio_T, Gleason_biopsia,
+         Confinamiento_organo, PSA_preoperatorio, Terapia_previa,
+         Unidades_transfundidas, Gleason_quirurgico, Terapia_adyuvante,
+         Radioterapia_adyuvante, Recurrencia_bioquimica, Censor,
+         Tiempo_hasta_recurrencia, BN_positivo)
+```
+
+# 5. Imputación múltiple con MICE
+
+**¿Qué hacemos?** 20 imputaciones con métodos adecuados: pmm (continuas), logreg (binarias), polyreg (multinivel).
+
+**¿Por qué 20?** Equilibra precisión y computation; recomendado para missing moderado.
+
+```{r}
+set.seed(2025)
+
+imp <- mice(datos_imp, m = 20, maxit = 30, seed = 2025, printFlag = FALSE,
+            method = c("polyreg", "pmm", "pmm", "logreg", "logreg",
+                       "pmm", "polyreg", "logreg", "polyreg",
+                       "logreg", "pmm", "logreg", "pmm", "polyreg",
+                       "logreg", "logreg", "logreg", "logreg",
+                       "pmm", "logreg"))
+
+imp
+```
+
+# 6. Validación de la calidad de la imputación
+
+# 6.1 Variables continuas: ¿los valores imputados son plausibles?
+
+**¿Qué hacemos?** Boxplots de distribuciones imputadas vs. observadas para Volumen_prostata y PSA_preoperatorio.
+
+**¿Por qué?** Verifica que imputados sean realistas y dentro de rangos biológicos.
+
+```{r}
+ggmice(imp, aes(x = .imp, y = Volumen_prostata)) + 
+  geom_boxplot(alpha = 0.7, outlier.shape = NA) +
+  labs(title = "Volumen próstata", x = "Imputación (0 = observado)")
+
+ggmice(imp, aes(x = .imp, y = PSA_preoperatorio)) + 
+  geom_boxplot(alpha = 0.7, outlier.shape = NA) +
+  labs(title = "PSA preoperatorio", x = "Imputación (0 = observado)")
+```
+
+# 6.2 Variables categóricas: ¿se preservan las proporciones?
+
+**¿Qué hacemos?** Comparamos proporciones de Recurrencia_bioquimica observada vs. imputada.
+
+**¿Por qué?** Desbalanceo indicaría fallo en imputación.
+
+```{r}
+complete(imp, "long", include = TRUE) %>%
+  mutate(status = if_else(.imp == 0, "Observado", "Imputado")) %>%
+  count(status, Recurrencia_bioquimica) %>%
+  group_by(status) %>%
+  mutate(prop = prop.table(n)) %>%
+  select(-n) %>% pivot_wider(names_from = Recurrencia_bioquimica, values_from = prop) %>%
+  knitr::kable(digits = 3, caption = "Proporción de recurrencia: observado vs imputado")
+```
+
+# 7. Modelo final ajustado con imputación múltiple
+
+**¿Qué hacemos?** Regresión logística para Recurrencia_bioquimica, pooling con reglas de Rubin.
+
+**¿Por qué?** Proporciona estimaciones no sesgadas de asociaciones en presencia de missings.
+
+```{r}
+{r} 
+modelo_imp <- with(imp, glm(Recurrencia_bioquimica ~ Grupo_edad_GR + Edad + Raza_afroamericana +
+                            Historia_familiar + Volumen_prostata + Volumen_tumoral + Estadio_T +
+                            Gleason_biopsia + Confinamiento_organo + PSA_preoperatorio +
+                            Terapia_previa + Unidades_transfundidas + Gleason_quirurgico +
+                            Terapia_adyuvante + Radioterapia_adyuvante + BN_positivo,
+                          family = binomial))
+
+tbl_regression(modelo_imp, exponentiate = TRUE,
+               label = list(Grupo_edad_GR ~ "Grupo de edad",
+                            Edad ~ "Edad",
+                            Raza_afroamericana ~ "Raza afroamericana",
+                            Historia_familiar ~ "Historia familiar",
+                            Volumen_prostata ~ "Volumen próstata",
+                            Volumen_tumoral ~ "Volumen tumoral",
+                            Estadio_T ~ "Estadio T",
+                            Gleason_biopsia ~ "Gleason biopsia",
+                            Confinamiento_organo ~ "Confinamiento órgano",
+                            PSA_preoperatorio ~ "PSA preoperatorio",
+                            Terapia_previa ~ "Terapia previa",
+                            Unidades_transfundidas ~ "Unidades transfundidas",
+                            Gleason_quirurgico ~ "Gleason quirúrgico",
+                            Terapia_adyuvante ~ "Terapia adyuvante",
+                            Radioterapia_adyuvante ~ "Radioterapia adyuvante",
+                            BN_positivo ~ "BN positivo")) %>%
+  bold_p(t = 0.05) %>%
+  modify_header(estimate ~ "**OR ajustado (IC 95%)**") %>%
+  modify_caption("**Factores asociados a recurrencia bioquímica – Imputación múltiple (m=20)**")
+
+```
+
+## Conclusiones finales
+
+1.  Datos perdidos no MCAR, justificando imputación.
+
+2.  Imputación generó valores plausibles.
+
+3.  Modelo final permite inferencias válidas sobre recurrencia en cáncer de próstata.
