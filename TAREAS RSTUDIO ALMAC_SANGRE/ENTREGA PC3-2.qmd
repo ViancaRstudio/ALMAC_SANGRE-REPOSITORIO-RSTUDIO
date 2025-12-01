@@ -1,0 +1,280 @@
+---
+title: "ENTREGA PC4 ALMAC SANGRE"
+format: html
+editor: visual
+---
+
+# INTRODUCCIÓN
+
+El presente estudio tiene como objetivo **identificar los factores clínicos y demográficos asociados con la recurrencia bioquímica** en pacientes sometidos a prostatectomía radical. Se utiliza un conjunto de datos de **316 pacientes** con cáncer de próstata, que incluye variables como edad, volumen prostático, PSA preoperatorio, estadio tumoral, puntuación de Gleason (biopsia y quirúrgica), raza, historia familiar, entre otras.
+
+La **recurrencia bioquímica** (definida como elevación del PSA postoperatorio) es un marcador temprano de progresión de la enfermedad y guía decisiones terapéuticas. Mediante **regresión logística**, se evaluará el efecto independiente de cada variable sobre la probabilidad de recurrencia, ajustando por potenciales confusores.
+
+Se aplicará un enfoque sistemático: desde el análisis univariado hasta la selección automática de variables, con énfasis en la **parsimonia (AIC)**, **multicolinealidad (VIF)** y **interpretación clínica**.
+
+# CARGA DE PAQUETES NECESARIOS
+
+Qué haré: Instalar y cargar: tidyverse, here, rio, gtsummary, car, MASS, performance. Por qué: Garantizar herramientas para manipulación, modelado, visualización y reporte de resultados.
+
+```{r}
+required <- c("tidyverse","here","rio","gtsummary","car","survival",
+              "performance","MASS","broom")
+
+install.packages(setdiff(required, installed.packages()[,"Package"]),
+                 repos = "https://cloud.r-project.org")
+
+lapply(required, library, character.only = TRUE)
+```
+
+# IMPORTACIÓN DEL DATASET
+
+Qué haré: Leer almac_sangre.csv con rio::import(). Por qué: Acceder al dataset de 316 pacientes con variables clínicas y demográficas.
+
+```{r}
+
+# Ajusta esta ruta si tu archivo está en otra carpeta
+
+datos <- read_csv("C:/Users/Franco Rodrigo/Desktop/DATA/almac_sangre.csv")
+
+glimpse(df)
+summary(df)
+
+```
+
+# PREPROCESAMIENTO
+
+**Qué haré:**
+
+-   Convertir variables categóricas a factor.
+
+-   "No asignado" → NA.
+
+-   Eliminar filas con NA usando na.omit().
+
+-   Excluir Tiempo_hasta_recurrencia y Censor (no aplican en logística). **Por qué:** Asegurar datos limpios, completos y en formato adecuado para modelado.
+
+```{r}
+library(dplyr)
+
+# Convertir variables categóricas a factor
+datos <- datos %>%
+  mutate(
+    Grupo_edad_GR = factor(Grupo_edad_GR, levels = c("Joven", "Intermedio", "Mayor")),
+    Raza_afroamericana = factor(Raza_afroamericana, levels = c("No", "Sí")),
+    Historia_familiar = factor(Historia_familiar, levels = c("No", "Sí")),
+    Volumen_tumoral = factor(Volumen_tumoral, levels = c("Bajo", "Medio", "Alto")),
+    Estadio_T = factor(Estadio_T),
+    Gleason_biopsia = factor(Gleason_biopsia, levels = c("Gleason 0-6", "Gleason 7", "Gleason 8-10")),
+    Confinamiento_organo = factor(Confinamiento_organo, levels = c("No", "Sí")),
+    Terapia_previa = factor(Terapia_previa, levels = c("No", "Sí")),
+    Gleason_quirurgico = factor(Gleason_quirurgico),
+    Terapia_adyuvante = factor(Terapia_adyuvante, levels = c("No", "Sí")),
+    Radioterapia_adyuvante = factor(Radioterapia_adyuvante, levels = c("No", "Sí")),
+    Recurrencia_bioquimica = factor(Recurrencia_bioquimica, levels = c("No", "Sí")),
+    Censor = factor(Censor, levels = c("No", "Sí")),
+    BN_positivo = factor(BN_positivo, levels = c("No", "Sí"))
+  )
+
+# Reemplazar "No asignado" por NA
+datos <- datos %>%
+  mutate(across(where(is.character), ~ na_if(.x, "No asignado"))) %>%
+  mutate(across(where(is.character), as.factor))
+
+# Columnas a eliminar (solo si existen)
+cols_to_remove <- c("Tiempo_hasta_recurrencia", "Censor")
+cols_to_remove <- cols_to_remove[cols_to_remove %in% colnames(datos)]
+
+# Crear listado de columnas finales
+colnames_finales <- setdiff(colnames(datos), cols_to_remove)
+
+# Seleccionar columnas válidas y limpiar NA
+datos_limpios <- datos %>%
+  dplyr::select(all_of(colnames_finales)) %>%
+  na.omit()
+
+cat("Filas después de na.omit():", nrow(datos_limpios), "\n")
+
+
+```
+
+# Analisis Univariado
+
+**Qué haré:** Regresión logística simple por cada variable → OR crudos. **Por qué:** Evaluar el efecto individual de cada predictor sobre la recurrencia.
+
+```{r}
+tabla_univ <- tbl_uvregression(
+  datos_limpios,
+  method = glm,
+  y = Recurrencia_bioquimica,
+  method.args = list(family = binomial),
+  exponentiate = TRUE,
+  include = everything()
+) %>%
+  add_global_p() %>%
+  bold_p() %>%
+  modify_header(label = "**Variable**")
+```
+
+# Analisis Multivariado
+
+Qué haré: glm(Recurrencia \~ .) con todas las variables. Por qué: Estimar el efecto ajustado de cada variable, controlando por las demás.
+
+```{r}
+library(gtsummary)
+
+modelo_completo <- glm(
+  Recurrencia_bioquimica ~ .,
+  data = datos_limpios,
+  family = binomial
+)
+
+tabla_multi <- tbl_regression(
+  modelo_completo,
+  exponentiate = TRUE
+) %>%
+  bold_p() %>%
+  modify_header(label ~ "**Variable**")
+
+tabla_multi
+
+```
+
+# COMPARACIÓN DE MODELOS CON AIC
+
+Qué haré: Calcular AIC para modelo completo y seleccionados. Por qué: Identificar el modelo con mejor balance entre ajuste y simplicidad.
+
+```{r}
+cat("\nAIC del modelo completo:", round(AIC(modelo_completo), 2), "\n")
+```
+
+# SELECCIÓN AUTOMÁTICA DE VARIABLES
+
+-   **Backward**: Elimina variables no significativas.
+
+<!-- -->
+
+-   **Forward**: Añade variables predictivas.
+
+<!-- -->
+
+-   **Stepwise**: Combina ambos. **Por qué:** Obtener modelos parsimoniosos y evitar sobreajuste.
+
+```{r}
+# Modelo nulo
+modelo_nulo <- glm(Recurrencia_bioquimica ~ 1, data = datos_limpios, family = binomial)
+
+# Alcance para forward/stepwise
+alcance <- formula(modelo_completo)
+
+# Backward Elimination
+modelo_backward <- step(modelo_completo, direction = "backward", trace = FALSE)
+cat("AIC Backward:", round(AIC(modelo_backward), 2), "\n")
+
+# Forward Selection
+modelo_forward <- step(modelo_nulo, direction = "forward", scope = alcance, trace = FALSE)
+cat("AIC Forward:", round(AIC(modelo_forward), 2), "\n")
+
+# Stepwise
+modelo_stepwise <- step(modelo_nulo, direction = "both", scope = alcance, trace = FALSE)
+cat("AIC Stepwise:", round(AIC(modelo_stepwise), 2), "\n")
+```
+
+# EVALUACIÓN DE MULTICOLINEALIDAD
+
+Qué haré: Calcular VIF (Variance Inflation Factor). Por qué: Detectar correlación entre predictores que distorsione los coeficientes.
+
+```{r}
+library(performance)
+
+# Evaluación de colinealidad sin errores
+colin <- check_collinearity(modelo_completo)
+
+print(colin)
+```
+
+# TABLAS DE MODELOS SELECCIONADOS
+
+Qué haré: tbl_merge(): Univariado + Multivariado en una tabla. Por qué: Facilitar comparación directa de OR crudos vs. ajustados.
+
+```{r}
+# TABLAS DE MODELOS SELECCIONADOS
+
+tabla_backward <- tbl_regression(modelo_backward, exponentiate = TRUE) %>%
+  add_glance_source_note(include = c("AIC", "nobs")) %>%
+  modify_header(label = "**Modelo Backward**")
+
+tabla_forward <- tbl_regression(modelo_forward, exponentiate = TRUE) %>%
+  add_glance_source_note(include = c("AIC", "nobs")) %>%
+  modify_header(label = "**Modelo Forward**")
+
+tabla_stepwise <- tbl_regression(modelo_stepwise, exponentiate = TRUE) %>%
+  add_glance_source_note(include = c("AIC", "nobs")) %>%
+  modify_header(label = "**Modelo Stepwise**")
+
+# TABLA COMBINADA: UNIVARIADO + MULTIVARIADO
+# ----------------------------------------------------
+
+tabla_combinada <- tbl_merge(
+  tbls = list(tabla_univ, tabla_multi),
+  tab_spanner = c("**Univariado**", "**Multivariado Completo**")
+)
+```
+
+# Tabla combinada
+
+Qué haré: Tablas formateadas con OR, IC 95%, p-valores y AIC. Por qué: Presentación profesional y reproducible de resultados.
+
+```{r}
+# ------------------------------------------------------
+tabla_combinada <- tbl_merge(
+  tbls = list(tabla_univ, tabla_multi),
+  tab_spanner = c("**Univariado**", "**Multivariado Completo**")
+)
+
+# 11. MOSTRAR RESULTADOS
+# ------------------------------------------------------
+cat("\n=== TABLA UNIVARIADA ===\n")
+print(tabla_univ)
+
+cat("\n=== TABLA MULTIVARIADA COMPLETA ===\n")
+print(tabla_multi)
+
+cat("\n=== TABLA COMBINADA ===\n")
+print(tabla_combinada)
+
+cat("\n=== COMPARACIÓN DE AIC ===\n")
+cat("Completo :", round(AIC(modelo_completo), 2), "\n")
+cat("Backward :", round(AIC(modelo_backward), 2), "\n")
+cat("Forward  :", round(AIC(modelo_forward), 2), "\n")
+cat("Stepwise :", round(AIC(modelo_stepwise), 2), "\n")
+```
+
+# MEJOR MODELO SEGÚN AIC
+
+**Qué haré:**
+
+-   Seleccionar modelo con **menor AIC**.
+
+-   Reportar **OR**, significancia y rendimiento. **Por qué:** Proporcionar conclusiones clínicas accionables para estratificación de riesgo.
+
+```{r}
+cat("\n=== TABLA DEL MEJOR MODELO ===\n")
+
+tabla_mejor <- tbl_regression(mejor_modelo, exponentiate = TRUE) %>%
+  bold_p() %>%
+  add_significance_stars() %>%
+  add_glance_source_note(include = c("AIC", "nobs"))
+
+print(tabla_mejor)
+
+# Odds Ratios
+cat("\nOdds Ratios del mejor modelo:\n")
+or_mejor <- exp(coef(mejor_modelo)) %>% round(3)
+print(or_mejor)
+
+# Evaluación del modelo
+cat("\nEvaluación del modelo (performance):\n")
+performance::model_performance(mejor_modelo) %>% print()
+```
+
+# 
